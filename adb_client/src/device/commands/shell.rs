@@ -19,6 +19,9 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
             )));
         }
 
+        let local_id = self.get_local_id()?;
+        let remote_id = self.get_remote_id()?;
+
         loop {
             let response = self.get_transport_mut().read_message()?;
             if response.header().command() != MessageCommand::Write {
@@ -26,6 +29,11 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
             }
 
             output.write_all(&response.into_payload())?;
+
+            self.get_transport_mut().write_message_with_timeout(
+                ADBTransportMessage::new(MessageCommand::Okay, local_id, remote_id, &[]),
+                std::time::Duration::from_secs(4),
+            )?;
         }
 
         Ok(())
