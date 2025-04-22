@@ -216,7 +216,10 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
             &sb,
         ))?;
         // HACK: some devices don't send a close message
-        match self.transport.read_message_with_timeout(Duration::from_millis(100)) {
+        match self
+            .transport
+            .read_message_with_timeout(Duration::from_millis(100))
+        {
             Err(RustADBError::UsbError(e)) if e == rusb::Error::Timeout => Ok(()),
             Err(e) => Err(e),
             Ok(_) => Ok(()),
