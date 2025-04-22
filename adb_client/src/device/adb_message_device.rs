@@ -105,7 +105,14 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
         mut reader: R,
     ) -> std::result::Result<(), RustADBError> {
         let mut buffer = [0; BUFFER_SIZE];
-        let max_read = self.maximum_data_size.unwrap_or(BUFFER_SIZE).min(BUFFER_SIZE) - 8;
+        // The max size of a data packet is the devices reported maximum data size
+        // minus 8 (the size of the sub command stuct before the data)
+        // or BUFFER_SIZE, whichever is smaller.
+        let max_read = self
+            .maximum_data_size
+            .map(|v| v - 8)
+            .unwrap_or(BUFFER_SIZE)
+            .min(BUFFER_SIZE);
         let amount_read = reader.read(&mut buffer[..max_read])?;
         assert!(amount_read <= max_read);
         let subcommand_data = MessageSubcommand::Data.with_arg(amount_read as u32);
