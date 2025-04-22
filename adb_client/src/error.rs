@@ -120,6 +120,9 @@ pub enum RustADBError {
     /// An unknown transport has been provided
     #[error("unknown transport: {0}")]
     UnknownTransport(String),
+    /// An error occurred while trying to convert integer sizes to one another
+    #[error(transparent)]
+    IntConvError(#[from] std::num::TryFromIntError),
 }
 
 impl<T> From<std::sync::PoisonError<T>> for RustADBError {

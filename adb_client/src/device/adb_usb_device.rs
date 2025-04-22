@@ -183,6 +183,7 @@ impl ADBUSBDevice {
         // If the device returned CNXN instead of AUTH it does not require authentication,
         // so we can skip the auth steps.
         if message.header().command() == MessageCommand::Cnxn {
+            self.inner.set_maximum_data_size(message.header().arg1())?;
             return Ok(());
         }
         message.assert_command(MessageCommand::Auth)?;
@@ -225,6 +226,7 @@ impl ADBUSBDevice {
             .read_message_with_timeout(Duration::from_secs(10))
             .and_then(|message| {
                 message.assert_command(MessageCommand::Cnxn)?;
+                self.inner.set_maximum_data_size(message.header().arg1())?;
                 Ok(message)
             })?;
 

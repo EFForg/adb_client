@@ -1,6 +1,7 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use rand::Rng;
 use std::io::{Cursor, Read, Seek};
+use std::time::Duration;
 
 use crate::{ADBMessageTransport, AdbStatResponse, Result, RustADBError, constants::BUFFER_SIZE};
 
@@ -13,6 +14,7 @@ pub struct ADBMessageDevice<T: ADBMessageTransport> {
     transport: T,
     local_id: Option<u32>,
     remote_id: Option<u32>,
+    maximum_data_size: Option<usize>,
 }
 
 impl<T: ADBMessageTransport> ADBMessageDevice<T> {
@@ -22,6 +24,7 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
             transport,
             local_id: None,
             remote_id: None,
+            maximum_data_size: None,
         }
     }
 
@@ -102,7 +105,9 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
         mut reader: R,
     ) -> std::result::Result<(), RustADBError> {
         let mut buffer = [0; BUFFER_SIZE];
-        let amount_read = reader.read(&mut buffer)?;
+        let max_read = self.maximum_data_size.unwrap_or(BUFFER_SIZE).min(BUFFER_SIZE) - 8;
+        let amount_read = reader.read(&mut buffer[..max_read])?;
+        assert!(amount_read <= max_read);
         let subcommand_data = MessageSubcommand::Data.with_arg(amount_read as u32);
 
         let mut serialized_message =
@@ -121,7 +126,7 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
         loop {
             let mut buffer = [0; BUFFER_SIZE];
 
-            match reader.read(&mut buffer) {
+            match reader.read(&mut buffer[..max_read]) {
                 Ok(0) => {
                     // Currently file mtime is not forwarded
                     let subcommand_data = MessageSubcommand::Done.with_arg(0);
@@ -151,6 +156,7 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
                     }
                 }
                 Ok(size) => {
+                    assert!(size <= max_read);
                     let subcommand_data = MessageSubcommand::Data.with_arg(size as u32);
 
                     let mut serialized_message = bincode::serialize(&subcommand_data)
@@ -202,14 +208,19 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
 
     pub(crate) fn end_transaction(&mut self) -> Result<()> {
         let quit_buffer = MessageSubcommand::Quit.with_arg(0u32);
+        let sb = bincode::serialize(&quit_buffer).map_err(|_e| RustADBError::ConversionError)?;
         self.send_and_expect_okay(ADBTransportMessage::new(
             MessageCommand::Write,
             self.get_local_id()?,
             self.get_remote_id()?,
-            &bincode::serialize(&quit_buffer).map_err(|_e| RustADBError::ConversionError)?,
+            &sb,
         ))?;
-        let _discard_close = self.transport.read_message()?;
-        Ok(())
+        // HACK: some devices don't send a close message
+        match self.transport.read_message_with_timeout(Duration::from_millis(100)) {
+            Err(RustADBError::UsbError(e)) if e == rusb::Error::Timeout => Ok(()),
+            Err(e) => Err(e),
+            Ok(_) => Ok(()),
+        }
     }
 
     pub(crate) fn open_session(&mut self, data: &[u8]) -> Result<ADBTransportMessage> {
@@ -241,5 +252,10 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
         self.remote_id.ok_or(RustADBError::ADBRequestFailed(
             "connection not opened, no remote_id".into(),
         ))
+    }
+
+    pub(crate) fn set_maximum_data_size(&mut self, maximum_data_size: u32) -> Result<()> {
+        self.maximum_data_size = Some(usize::try_from(maximum_data_size)?);
+        Ok(())
     }
 }
