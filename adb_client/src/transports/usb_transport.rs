@@ -1,8 +1,9 @@
-use std::{sync::Arc, time::Duration};
+use std::{fmt::Debug, sync::Arc, time::Duration};
 
-use rusb::{
-    Device, DeviceHandle, Direction, GlobalContext, TransferType,
-    constants::LIBUSB_CLASS_VENDOR_SPEC,
+use async_io::{Timer, block_on};
+use futures_lite::FutureExt;
+use nusb::{
+    transfer::{Direction, EndpointType, RequestBuffer}, Device, DeviceInfo, Interface
 };
 
 use super::{ADBMessageTransport, ADBTransport};
@@ -11,17 +12,23 @@ use crate::{
     device::{ADBTransportMessage, ADBTransportMessageHeader, MessageCommand},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct Endpoint {
+    iface: Interface,
+    address: u8,
+}
+
+#[derive(Debug, Clone)]
+struct EndpointDesc {
     iface: u8,
     address: u8,
 }
 
 /// Transport running on USB
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct USBTransport {
-    device: Device<GlobalContext>,
-    handle: Option<Arc<DeviceHandle<GlobalContext>>>,
+    device_info: DeviceInfo,
+    device: Option<Arc<Device>>,
     read_endpoint: Option<Endpoint>,
     write_endpoint: Option<Endpoint>,
 }
@@ -30,11 +37,9 @@ impl USBTransport {
     /// Instantiate a new [`USBTransport`].
     /// Only the first device with given vendor_id and product_id is returned.
     pub fn new(vendor_id: u16, product_id: u16) -> Result<Self> {
-        for device in rusb::devices()?.iter() {
-            if let Ok(descriptor) = device.device_descriptor() {
-                if descriptor.vendor_id() == vendor_id && descriptor.product_id() == product_id {
-                    return Ok(Self::new_from_device(device));
-                }
+        for device_info in nusb::list_devices()? {
+            if device_info.vendor_id() == vendor_id && device_info.product_id() == product_id {
+                return Ok(Self::new_from_device_info(device_info));
             }
         }
 
@@ -46,24 +51,14 @@ impl USBTransport {
 
     /// Instantiate a new [`USBTransport`] from a [`rusb::Device`].
     ///
-    /// Devices can be enumerated using [`rusb::devices()`] and then filtered out to get desired device.
-    pub fn new_from_device(rusb_device: rusb::Device<GlobalContext>) -> Self {
+    /// Devices can be enumerated using [`nusb::list_devices()`] and then filtered out to get desired device.
+    pub fn new_from_device_info(nusb_device_info: DeviceInfo) -> Self {
         Self {
-            device: rusb_device,
-            handle: None,
+            device_info: nusb_device_info,
+            device: None,
             read_endpoint: None,
             write_endpoint: None,
         }
-    }
-
-    pub(crate) fn get_raw_connection(&self) -> Result<Arc<DeviceHandle<GlobalContext>>> {
-        self.handle
-            .as_ref()
-            .ok_or(RustADBError::IOError(std::io::Error::new(
-                std::io::ErrorKind::NotConnected,
-                "not connected",
-            )))
-            .cloned()
     }
 
     fn get_read_endpoint(&self) -> Result<Endpoint> {
@@ -85,30 +80,28 @@ impl USBTransport {
             )))
     }
 
-    fn configure_endpoint(handle: &DeviceHandle<GlobalContext>, endpoint: &Endpoint) -> Result<()> {
-        handle.claim_interface(endpoint.iface)?;
-        Ok(())
+    fn configure_endpoint(device: &Device, endpoint_desc: &EndpointDesc) -> Result<Endpoint> {
+        let iface = device.claim_interface(endpoint_desc.iface)?;
+        Ok(Endpoint {
+            iface,
+            address: endpoint_desc.address,
+        })
     }
 
-    fn find_endpoints(&self, handle: &DeviceHandle<GlobalContext>) -> Result<(Endpoint, Endpoint)> {
-        let mut read_endpoint: Option<Endpoint> = None;
-        let mut write_endpoint: Option<Endpoint> = None;
+    fn find_endpoints(&self, device: &Device) -> Result<(EndpointDesc, EndpointDesc)> {
+        let mut read_endpoint: Option<EndpointDesc> = None;
+        let mut write_endpoint: Option<EndpointDesc> = None;
 
-        for n in 0..handle.device().device_descriptor()?.num_configurations() {
-            let config_desc = match handle.device().config_descriptor(n) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-
+        for config_desc in device.configurations() {
             for interface in config_desc.interfaces() {
-                for interface_desc in interface.descriptors() {
-                    for endpoint_desc in interface_desc.endpoint_descriptors() {
-                        if endpoint_desc.transfer_type() == TransferType::Bulk
-                            && interface_desc.class_code() == LIBUSB_CLASS_VENDOR_SPEC
-                            && interface_desc.sub_class_code() == 0x42
-                            && interface_desc.protocol_code() == 0x01
+                for interface_desc in interface.alt_settings() {
+                    for endpoint_desc in interface_desc.endpoints() {
+                        if endpoint_desc.transfer_type() == EndpointType::Bulk
+                            && interface_desc.class() == 0xff
+                            && interface_desc.subclass() == 0x42
+                            && interface_desc.protocol() == 0x01
                         {
-                            let endpoint = Endpoint {
+                            let endpoint = EndpointDesc {
                                 iface: interface_desc.interface_number(),
                                 address: endpoint_desc.address(),
                             };
@@ -140,17 +133,15 @@ impl USBTransport {
 
 impl ADBTransport for USBTransport {
     fn connect(&mut self) -> crate::Result<()> {
-        let device = self.device.open()?;
+        let device = self.device_info.open()?;
 
         let (read_endpoint, write_endpoint) = self.find_endpoints(&device)?;
 
-        Self::configure_endpoint(&device, &read_endpoint)?;
-        self.read_endpoint = Some(read_endpoint);
+        self.read_endpoint = Some(Self::configure_endpoint(&device, &read_endpoint)?);
 
-        Self::configure_endpoint(&device, &write_endpoint)?;
-        self.write_endpoint = Some(write_endpoint);
+        self.write_endpoint = Some(Self::configure_endpoint(&device, &write_endpoint)?);
 
-        self.handle = Some(Arc::new(device));
+        self.device = Some(Arc::new(device));
 
         Ok(())
     }
@@ -168,13 +159,11 @@ impl ADBMessageTransport for USBTransport {
         timeout: Duration,
     ) -> Result<()> {
         let endpoint = self.get_write_endpoint()?;
-        let handle = self.get_raw_connection()?;
 
         let message_bytes = message.header().as_bytes()?;
         let mut total_written = 0;
         loop {
-            total_written +=
-                handle.write_bulk(endpoint.address, &message_bytes[total_written..], timeout)?;
+            total_written += endpoint.write_bulk(&message_bytes[total_written..], timeout)?;
             if total_written == message_bytes.len() {
                 break;
             }
@@ -184,8 +173,7 @@ impl ADBMessageTransport for USBTransport {
         if !payload.is_empty() {
             let mut total_written = 0;
             loop {
-                total_written +=
-                    handle.write_bulk(endpoint.address, &payload[total_written..], timeout)?;
+                total_written += endpoint.write_bulk(&payload[total_written..], timeout)?;
                 if total_written == payload.len() {
                     break;
                 }
@@ -195,14 +183,16 @@ impl ADBMessageTransport for USBTransport {
         Ok(())
     }
 
-    fn read_message_with_timeout(&mut self, timeout: Duration) -> Result<ADBTransportMessage> {
+    fn read_message_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<ADBTransportMessage> {
         let endpoint = self.get_read_endpoint()?;
-        let handle = self.get_raw_connection()?;
 
         let mut data = [0; 24];
         let mut total_read = 0;
         loop {
-            total_read += handle.read_bulk(endpoint.address, &mut data[total_read..], timeout)?;
+            total_read += endpoint.read_bulk(&mut data[total_read..], timeout)?;
             if total_read == data.len() {
                 break;
             }
@@ -216,8 +206,7 @@ impl ADBMessageTransport for USBTransport {
             let mut msg_data = vec![0_u8; header.data_length() as usize];
             let mut total_read = 0;
             loop {
-                total_read +=
-                    handle.read_bulk(endpoint.address, &mut msg_data[total_read..], timeout)?;
+                total_read += endpoint.read_bulk(&mut msg_data[total_read..], timeout)?;
                 if total_read == msg_data.capacity() {
                     break;
                 }
@@ -237,5 +226,60 @@ impl ADBMessageTransport for USBTransport {
         }
 
         Ok(ADBTransportMessage::from_header_and_payload(header, vec![]))
+    }
+}
+
+impl Endpoint {
+    fn write_bulk(&self, buf: &[u8], timeout: Duration) -> Result<usize> {
+        let fut = async {
+            let comp = self.iface.bulk_out(self.address, buf.to_vec()).await;
+            comp.status?;
+
+            let n = comp.data.actual_length();
+            Ok(n)
+        };
+
+        block_on(fut.or(async {
+            Timer::after(timeout).await;
+            Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into())
+        }))
+    }
+
+    fn read_bulk(&self, buf: &mut [u8], timeout: Duration) -> Result<usize> {
+        let fut = async {
+            let comp = self
+                .iface
+                .bulk_in(self.address, RequestBuffer::new(buf.len()))
+                .await;
+            comp.status?;
+
+            let n = comp.data.len();
+            buf[..n].copy_from_slice(&comp.data);
+            Ok(n)
+        };
+
+        block_on(fut.or(async {
+            Timer::after(timeout).await;
+            Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into())
+        }))
+    }
+}
+
+impl Debug for Endpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Endpoint")
+            .field("iface", &self.iface.interface_number())
+            .field("address", &self.address)
+            .finish()
+    }
+}
+
+impl Debug for USBTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("USBTransport")
+            .field("device_info", &self.device_info)
+            .field("read_endpoint", &self.read_endpoint)
+            .field("write_endpoint", &self.write_endpoint)
+            .finish()
     }
 }

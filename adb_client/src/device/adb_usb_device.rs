@@ -1,7 +1,4 @@
-use rusb::Device;
-use rusb::DeviceDescriptor;
-use rusb::UsbContext;
-use rusb::constants::LIBUSB_CLASS_VENDOR_SPEC;
+use nusb::Device;
 use std::fs::read_to_string;
 use std::io::Read;
 use std::io::Write;
@@ -33,17 +30,17 @@ pub fn read_adb_private_key<P: AsRef<Path>>(private_key_path: P) -> Result<Optio
 /// Search for adb devices with known interface class and subclass values
 fn search_adb_devices() -> Result<Option<(u16, u16)>> {
     let mut found_devices = vec![];
-    for device in rusb::devices()?.iter() {
-        let Ok(des) = device.device_descriptor() else {
+    for device_info in nusb::list_devices()? {
+        let Ok(device) = device_info.open() else {
             continue;
         };
-        if is_adb_device(&device, &des) {
+        if is_adb_device(&device) {
             log::debug!(
                 "Autodetect device {:04x}:{:04x}",
-                des.vendor_id(),
-                des.product_id()
+                device_info.vendor_id(),
+                device_info.product_id()
             );
-            found_devices.push((des.vendor_id(), des.product_id()));
+            found_devices.push((device_info.vendor_id(), device_info.product_id()));
         }
     }
 
@@ -57,7 +54,7 @@ fn search_adb_devices() -> Result<Option<(u16, u16)>> {
     }
 }
 
-fn is_adb_device<T: UsbContext>(device: &Device<T>, des: &DeviceDescriptor) -> bool {
+fn is_adb_device(device: &Device) -> bool {
     const ADB_SUBCLASS: u8 = 0x42;
     const ADB_PROTOCOL: u8 = 0x1;
 
@@ -66,17 +63,14 @@ fn is_adb_device<T: UsbContext>(device: &Device<T>, des: &DeviceDescriptor) -> b
     const BULK_CLASS: u8 = 0xdc;
     const BULK_ADB_SUBCLASS: u8 = 2;
 
-    for n in 0..des.num_configurations() {
-        let Ok(config_des) = device.config_descriptor(n) else {
-            continue;
-        };
-        for interface in config_des.interfaces() {
-            for interface_des in interface.descriptors() {
-                let proto = interface_des.protocol_code();
-                let class = interface_des.class_code();
-                let subcl = interface_des.sub_class_code();
+    for config_desc in device.configurations() {
+        for interface in config_desc.interfaces() {
+            for interface_desc in interface.alt_settings() {
+                let proto = interface_desc.protocol();
+                let class = interface_desc.class();
+                let subcl = interface_desc.subclass();
                 if proto == ADB_PROTOCOL
-                    && ((class == LIBUSB_CLASS_VENDOR_SPEC && subcl == ADB_SUBCLASS)
+                    && ((class == 0xff && subcl == ADB_SUBCLASS)
                         || (class == BULK_CLASS && subcl == BULK_ADB_SUBCLASS))
                 {
                     return true;

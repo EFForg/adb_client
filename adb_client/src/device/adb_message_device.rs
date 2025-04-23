@@ -1,6 +1,6 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use rand::Rng;
-use std::io::{Cursor, Read, Seek};
+use std::io::{Cursor, ErrorKind, Read, Seek};
 use std::time::Duration;
 
 use crate::{ADBMessageTransport, AdbStatResponse, Result, RustADBError, constants::BUFFER_SIZE};
@@ -227,7 +227,7 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
             .transport
             .read_message_with_timeout(Duration::from_millis(100))
         {
-            Err(RustADBError::UsbError(e)) if e == rusb::Error::Timeout => Ok(()),
+            Err(RustADBError::IOError(e)) if e.kind() == ErrorKind::TimedOut => Ok(()),
             Err(e) => Err(e),
             Ok(_) => Ok(()),
         }
