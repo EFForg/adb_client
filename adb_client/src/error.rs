@@ -67,6 +67,7 @@ pub enum RustADBError {
     #[error("Cannot get home directory")]
     NoHomeDirectory,
     /// USB data transfer error
+    #[cfg(feature = "usb")]
     #[error("USB Transfer Error: {0}")]
     UsbTransferError(#[from] nusb::transfer::TransferError),
     /// USB device not found
@@ -97,12 +98,15 @@ pub enum RustADBError {
     #[error("error with pkcs8: {0}")]
     RsaPkcs8Error(#[from] rsa::pkcs8::Error),
     /// Error during certificate generation
+    #[cfg(any(feature = "tcp", feature = "usb-auth"))]
     #[error(transparent)]
     CertificateGenerationError(#[from] rcgen::Error),
     /// TLS Error
+    #[cfg(feature = "tcp")]
     #[error(transparent)]
     TLSError(#[from] rustls::Error),
     /// PEM certificate error
+    #[cfg(feature = "tcp")]
     #[error(transparent)]
     PemCertError(#[from] rustls_pki_types::pem::Error),
     /// Error while locking mutex

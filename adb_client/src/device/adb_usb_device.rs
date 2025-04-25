@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::adb_message_device::ADBMessageDevice;
+use super::get_default_adb_key_path;
 use super::models::MessageCommand;
 use super::{ADBRsaKey, ADBTransportMessage};
 use crate::ADBDeviceExt;
@@ -79,14 +80,6 @@ fn is_adb_device(device: &Device) -> bool {
         }
     }
     false
-}
-
-pub fn get_default_adb_key_path() -> Result<PathBuf> {
-    homedir::my_home()
-        .ok()
-        .flatten()
-        .map(|home| home.join(".android").join("adbkey"))
-        .ok_or(RustADBError::NoHomeDirectory)
 }
 
 /// Represent a device reached and available over USB.

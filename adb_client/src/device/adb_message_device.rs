@@ -264,6 +264,7 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
         ))
     }
 
+    #[cfg(feature = "usb")]
     pub(crate) fn set_maximum_data_size(&mut self, maximum_data_size: u32) -> Result<()> {
         self.maximum_data_size = Some(usize::try_from(maximum_data_size)?);
         Ok(())
