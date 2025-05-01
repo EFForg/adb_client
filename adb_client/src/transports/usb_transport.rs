@@ -81,7 +81,7 @@ impl USBTransport {
     }
 
     fn configure_endpoint(device: &Device, endpoint_desc: &EndpointDesc) -> Result<Endpoint> {
-        let iface = device.detach_and_claim_interface(endpoint_desc.iface)?;
+        let iface = device.claim_interface(endpoint_desc.iface)?;
         Ok(Endpoint {
             iface,
             address: endpoint_desc.address,
