@@ -10,17 +10,8 @@ use crate::{
 impl<T: ADBMessageTransport> ADBMessageDevice<T> {
     /// Runs 'command' in a shell on the device, and write its output and error streams into output.
     pub(crate) fn shell_command(&mut self, command: &[&str], output: &mut dyn Write) -> Result<()> {
-        let response = self.open_session(format!("shell:{}\0", command.join(" "),).as_bytes())?;
-
-        if response.header().command() != MessageCommand::Okay {
-            return Err(RustADBError::ADBRequestFailed(format!(
-                "wrong command {}",
-                response.header().command()
-            )));
-        }
-
-        let local_id = self.get_local_id()?;
-        let remote_id = self.get_remote_id()?;
+        let session =
+            self.open_session(format!("shell:{}\0", command.join(" "),).as_bytes())?;
 
         loop {
             let response = self.get_transport_mut().read_message()?;
@@ -31,7 +22,12 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
             output.write_all(&response.into_payload())?;
 
             self.get_transport_mut().write_message_with_timeout(
-                ADBTransportMessage::new(MessageCommand::Okay, local_id, remote_id, &[]),
+                ADBTransportMessage::new(
+                    MessageCommand::Okay,
+                    session.local_id,
+                    session.remote_id,
+                    &[],
+                ),
                 std::time::Duration::from_secs(4),
             )?;
         }
@@ -46,12 +42,9 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
         mut reader: &mut dyn Read,
         mut writer: Box<(dyn Write + Send)>,
     ) -> Result<()> {
-        self.open_session(b"shell:\0")?;
+        let session = self.open_session(b"shell:\0")?;
 
         let mut transport = self.get_transport().clone();
-
-        let local_id = self.get_local_id()?;
-        let remote_id = self.get_remote_id()?;
 
         // Reading thread, reads response from adbd
         std::thread::spawn(move || -> Result<()> {
@@ -59,8 +52,12 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
                 let message = transport.read_message()?;
 
                 // Acknowledge for more data
-                let response =
-                    ADBTransportMessage::new(MessageCommand::Okay, local_id, remote_id, &[]);
+                let response = ADBTransportMessage::new(
+                    MessageCommand::Okay,
+                    session.local_id,
+                    session.remote_id,
+                    &[],
+                );
                 transport.write_message(response)?;
 
                 match message.header().command() {
@@ -75,7 +72,8 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
         });
 
         let transport = self.get_transport().clone();
-        let mut shell_writer = ShellMessageWriter::new(transport, local_id, remote_id);
+        let mut shell_writer =
+            ShellMessageWriter::new(transport, session.local_id, session.remote_id);
 
         // Read from given reader (that could be stdin e.g), and write content to device adbd
         if let Err(e) = std::io::copy(&mut reader, &mut shell_writer) {
