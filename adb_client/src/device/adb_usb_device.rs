@@ -1,4 +1,5 @@
 use nusb::Device;
+use nusb::MaybeFuture as _;
 use std::fs::read_to_string;
 use std::io::Read;
 use std::io::Write;
@@ -31,8 +32,8 @@ pub fn read_adb_private_key<P: AsRef<Path>>(private_key_path: P) -> Result<Optio
 /// Search for adb devices with known interface class and subclass values
 fn search_adb_devices() -> Result<Option<(u16, u16)>> {
     let mut found_devices = vec![];
-    for device_info in nusb::list_devices()? {
-        let Ok(device) = device_info.open() else {
+    for device_info in nusb::list_devices().wait()? {
+        let Ok(device) = device_info.open().wait() else {
             continue;
         };
         if is_adb_device(&device) {

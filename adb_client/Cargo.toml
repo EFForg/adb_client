@@ -29,7 +29,8 @@ log = { version = "0.4.26" }
 mdns-sd = { version = "0.13.2" }
 num-bigint = { version = "0.8.4", package = "num-bigint-dig", optional = true }
 num-traits = { version = "0.2.19", optional = true }
-nusb = { version = "0.1.13", optional = true }
+nusb = { git = "https://github.com/cstrahan/nusb.git", rev = "8e234a53dc41e1f6ed782dbf8ee0b2bc67339180", optional = true }
+# nusb = { version = "0.1.13", optional = true }
 quick-protobuf = { version = "0.8.1", optional = true }
 rand = { version = "0.9.0", optional = true }
 rcgen = { version = "0.13.1", optional = true }

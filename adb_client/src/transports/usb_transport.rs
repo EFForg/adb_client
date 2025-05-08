@@ -3,7 +3,7 @@ use std::{fmt::Debug, sync::Arc, time::Duration};
 use async_io::{Timer, block_on};
 use futures_lite::FutureExt;
 use nusb::{
-    transfer::{Direction, EndpointType, RequestBuffer}, Device, DeviceInfo, Interface
+    transfer::{Direction, RequestBuffer, TransferType}, Device, DeviceInfo, Interface, MaybeFuture
 };
 
 use super::{ADBMessageTransport, ADBTransport};
@@ -37,7 +37,7 @@ impl USBTransport {
     /// Instantiate a new [`USBTransport`].
     /// Only the first device with given vendor_id and product_id is returned.
     pub fn new(vendor_id: u16, product_id: u16) -> Result<Self> {
-        for device_info in nusb::list_devices()? {
+        for device_info in nusb::list_devices().wait()? {
             if device_info.vendor_id() == vendor_id && device_info.product_id() == product_id {
                 return Ok(Self::new_from_device_info(device_info));
             }
@@ -81,7 +81,7 @@ impl USBTransport {
     }
 
     fn configure_endpoint(device: &Device, endpoint_desc: &EndpointDesc) -> Result<Endpoint> {
-        let iface = device.claim_interface(endpoint_desc.iface)?;
+        let iface = device.claim_interface(endpoint_desc.iface).wait()?;
         Ok(Endpoint {
             iface,
             address: endpoint_desc.address,
@@ -96,7 +96,7 @@ impl USBTransport {
             for interface in config_desc.interfaces() {
                 for interface_desc in interface.alt_settings() {
                     for endpoint_desc in interface_desc.endpoints() {
-                        if endpoint_desc.transfer_type() == EndpointType::Bulk
+                        if endpoint_desc.transfer_type() == TransferType::Bulk
                             && interface_desc.class() == 0xff
                             && interface_desc.subclass() == 0x42
                             && interface_desc.protocol() == 0x01
@@ -133,7 +133,7 @@ impl USBTransport {
 
 impl ADBTransport for USBTransport {
     fn connect(&mut self) -> crate::Result<()> {
-        let device = self.device_info.open()?;
+        let device = self.device_info.open().wait()?;
 
         let (read_endpoint, write_endpoint) = self.find_endpoints(&device)?;
 
