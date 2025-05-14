@@ -17,3 +17,5 @@ pub use tcp_transport::TcpTransport;
 pub use traits::{ADBMessageTransport, ADBTransport};
 #[cfg(feature = "usb")]
 pub use usb_transport::USBTransport;
+#[cfg(feature = "usb")]
+pub use usb_transport::search_adb_devices;

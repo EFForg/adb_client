@@ -67,9 +67,13 @@ pub enum RustADBError {
     #[error("Cannot get home directory")]
     NoHomeDirectory,
     /// USB data transfer error
-    #[cfg(feature = "usb")]
+    #[cfg(all(feature = "usb", target_os = "linux"))]
     #[error("USB Transfer Error: {0}")]
     UsbTransferError(#[from] nusb::transfer::TransferError),
+    /// Libusb error
+    #[cfg(all(feature = "usb", any(target_os = "windows", target_os = "macos")))]
+    #[error("USB Error: {0}")]
+    LibusbError(#[from] rusb::Error),
     /// USB device not found
     #[error("USB Device not found: {0} {1}")]
     USBDeviceNotFound(u16, u16),

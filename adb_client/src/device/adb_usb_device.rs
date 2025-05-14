@@ -1,4 +1,3 @@
-use nusb::Device;
 use std::fs::read_to_string;
 use std::io::Read;
 use std::io::Write;
@@ -10,6 +9,7 @@ use super::adb_message_device::ADBMessageDevice;
 use super::get_default_adb_key_path;
 use super::models::MessageCommand;
 use super::{ADBRsaKey, ADBTransportMessage};
+use crate::search_adb_devices;
 use crate::ADBDeviceExt;
 use crate::ADBMessageTransport;
 use crate::ADBTransport;
@@ -26,60 +26,6 @@ pub fn read_adb_private_key<P: AsRef<Path>>(private_key_path: P) -> Result<Optio
             }
         }
     })?)
-}
-
-/// Search for adb devices with known interface class and subclass values
-fn search_adb_devices() -> Result<Option<(u16, u16)>> {
-    let mut found_devices = vec![];
-    for device_info in nusb::list_devices()? {
-        let Ok(device) = device_info.open() else {
-            continue;
-        };
-        if is_adb_device(&device) {
-            log::debug!(
-                "Autodetect device {:04x}:{:04x}",
-                device_info.vendor_id(),
-                device_info.product_id()
-            );
-            found_devices.push((device_info.vendor_id(), device_info.product_id()));
-        }
-    }
-
-    match (found_devices.first(), found_devices.get(1)) {
-        (None, _) => Ok(None),
-        (Some(identifiers), None) => Ok(Some(*identifiers)),
-        (Some((vid1, pid1)), Some((vid2, pid2))) => Err(RustADBError::DeviceNotFound(format!(
-            "Found two Android devices {:04x}:{:04x} and {:04x}:{:04x}",
-            vid1, pid1, vid2, pid2
-        ))),
-    }
-}
-
-fn is_adb_device(device: &Device) -> bool {
-    const ADB_SUBCLASS: u8 = 0x42;
-    const ADB_PROTOCOL: u8 = 0x1;
-
-    // Some devices require choosing the file transfer mode
-    // for usb debugging to take effect.
-    const BULK_CLASS: u8 = 0xdc;
-    const BULK_ADB_SUBCLASS: u8 = 2;
-
-    for config_desc in device.configurations() {
-        for interface in config_desc.interfaces() {
-            for interface_desc in interface.alt_settings() {
-                let proto = interface_desc.protocol();
-                let class = interface_desc.class();
-                let subcl = interface_desc.subclass();
-                if proto == ADB_PROTOCOL
-                    && ((class == 0xff && subcl == ADB_SUBCLASS)
-                        || (class == BULK_CLASS && subcl == BULK_ADB_SUBCLASS))
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
 }
 
 /// Represent a device reached and available over USB.

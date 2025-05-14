@@ -11,7 +11,7 @@ version.workspace = true
 
 [features]
 default = ["tcp", "usb", "usb-auth"]
-usb = ["async-io", "nusb", "futures-lite", "bincode", "sha1", "serde_repr", "rand", "num-traits", "num-bigint"]
+usb = ["async-io", "nusb", "rusb", "futures-lite", "bincode", "sha1", "serde_repr", "rand", "num-traits", "num-bigint"]
 usb-auth = []
 tcp = ["rustls", "bincode", "rand", "serde_repr", "quick-protobuf", "rcgen"]
 
@@ -29,7 +29,6 @@ log = { version = "0.4.26" }
 mdns-sd = { version = "0.13.2" }
 num-bigint = { version = "0.8.4", package = "num-bigint-dig", optional = true }
 num-traits = { version = "0.2.19", optional = true }
-nusb = { version = "0.1.13", optional = true }
 quick-protobuf = { version = "0.8.1", optional = true }
 rand = { version = "0.9.0", optional = true }
 rcgen = { version = "0.13.1", optional = true }
@@ -41,6 +40,12 @@ serde = { version = "1.0.216", features = ["derive"] }
 serde_repr = { version = "0.1.19", optional = true }
 sha1 = { version = "0.10.6", features = ["oid"], optional = true }
 thiserror = { version = "2.0.7" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nusb = { version = "0.1.13", optional = true }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+rusb = { version = "0.9.4", features = ["vendored"], optional = true }
 
 [dev-dependencies]
 anyhow = { version = "1.0.93" }
