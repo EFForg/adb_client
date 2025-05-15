@@ -144,6 +144,11 @@ impl From<rusb::Error> for RustADBError {
             rusb::Error::NotFound => ErrorKind::NotFound.into(),
             rusb::Error::Busy => ErrorKind::ResourceBusy.into(),
             rusb::Error::Timeout => ErrorKind::TimedOut.into(),
+            rusb::Error::Access => ErrorKind::PermissionDenied.into(),
+            rusb::Error::Pipe => ErrorKind::BrokenPipe.into(),
+            rusb::Error::NoMem => ErrorKind::OutOfMemory.into(),
+            rusb::Error::Interrupted => ErrorKind::Interrupted.into(),
+            rusb::Error::NotSupported => ErrorKind::Unsupported.into(),
             other => std::io::Error::new(ErrorKind::Other, other),
         };
         RustADBError::IOError(io_error)
