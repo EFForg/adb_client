@@ -67,13 +67,9 @@ pub enum RustADBError {
     #[error("Cannot get home directory")]
     NoHomeDirectory,
     /// USB data transfer error
-    #[cfg(all(feature = "usb", target_os = "linux"))]
+    #[cfg(all(feature = "trans-nusb"))]
     #[error("USB Transfer Error: {0}")]
     UsbTransferError(#[from] nusb::transfer::TransferError),
-    /// Libusb error
-    #[cfg(all(feature = "usb", any(target_os = "windows", target_os = "macos")))]
-    #[error("USB Error: {0}")]
-    LibusbError(#[from] rusb::Error),
     /// USB device not found
     #[error("USB Device not found: {0} {1}")]
     USBDeviceNotFound(u16, u16),
@@ -136,5 +132,20 @@ pub enum RustADBError {
 impl<T> From<std::sync::PoisonError<T>> for RustADBError {
     fn from(_err: std::sync::PoisonError<T>) -> Self {
         Self::PoisonError
+    }
+}
+
+#[cfg(feature = "trans-libusb")]
+impl From<rusb::Error> for RustADBError {
+    fn from(value: rusb::Error) -> Self {
+        use std::io::ErrorKind;
+        let io_error: std::io::Error = match value {
+            rusb::Error::InvalidParam => ErrorKind::InvalidInput.into(),
+            rusb::Error::NotFound => ErrorKind::NotFound.into(),
+            rusb::Error::Busy => ErrorKind::ResourceBusy.into(),
+            rusb::Error::Timeout => ErrorKind::TimedOut.into(),
+            other => std::io::Error::new(ErrorKind::Other, other),
+        };
+        RustADBError::IOError(io_error)
     }
 }

@@ -1,9 +1,9 @@
-#[cfg(all(feature = "usb", target_os = "linux"))]
+#[cfg(all(feature = "trans-nusb"))]
 mod usb_transport_nusb;
-#[cfg(all(feature = "usb", target_os = "linux"))]
+#[cfg(all(feature = "trans-nusb"))]
 pub use usb_transport_nusb::*;
 
-#[cfg(all(feature = "usb", any(target_os = "windows", target_os = "macos")))]
+#[cfg(all(feature = "trans-libusb"))]
 mod usb_transport_libusb;
-#[cfg(all(feature = "usb", any(target_os = "windows", target_os = "macos")))]
+#[cfg(all(feature = "trans-libusb"))]
 pub use usb_transport_libusb::*;
