@@ -176,7 +176,8 @@ impl ADBUSBDevice {
     }
 
     #[inline]
-    fn get_transport_mut(&mut self) -> &mut USBTransport {
+    /// Get a reference to the underlying [`USBTransport`].
+    pub fn get_transport_mut(&mut self) -> &mut USBTransport {
         self.inner.get_transport_mut()
     }
 }
