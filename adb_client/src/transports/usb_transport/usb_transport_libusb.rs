@@ -1,7 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
 use rusb::{
-    constants::LIBUSB_CLASS_VENDOR_SPEC, Device, DeviceDescriptor, DeviceHandle, Direction, GlobalContext, TransferType, UsbContext
+    Device, DeviceDescriptor, DeviceHandle, Direction, GlobalContext, TransferType, UsbContext,
+    constants::LIBUSB_CLASS_VENDOR_SPEC,
 };
 
 use super::super::{ADBMessageTransport, ADBTransport};
@@ -53,6 +54,64 @@ impl USBTransport {
             read_endpoint: None,
             write_endpoint: None,
         }
+    }
+
+    /// Claim a USB interface if it is not already claimed by the read or write endpoint.
+    pub fn claim_interface(&mut self, iface: u8) -> Result<()> {
+        if self
+            .read_endpoint
+            .as_ref()
+            .is_some_and(|ep| ep.iface == iface)
+            || self
+                .write_endpoint
+                .as_ref()
+                .is_some_and(|ep| ep.iface == iface)
+        {
+            // Already claimed
+            return Ok(());
+        }
+        let handle = self.get_raw_connection()?;
+        handle.claim_interface(iface)?;
+        Ok(())
+    }
+
+    /// Send a raw USB control message to the desired interface
+    pub fn send_usb_class_control_msg(
+        &self,
+        _iface: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        buf: &[u8],
+        timeout: Duration,
+    ) -> Result<()> {
+        let handle = self.get_raw_connection()?;
+        handle.write_control(0x21, request, value, index, buf, timeout)?;
+        Ok(())
+    }
+
+    /// Perform a raw USB bulk read.
+    pub fn usb_bulk_read(
+        &self,
+        _iface: u8,
+        endpoint: u8,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> Result<usize> {
+        let handle = self.get_raw_connection()?;
+        Ok(handle.read_bulk(endpoint, buf, timeout)?)
+    }
+
+    /// Perform a raw USB bulk write.
+    pub fn usb_bulk_write(
+        &self,
+        _iface: u8,
+        endpoint: u8,
+        buf: &[u8],
+        timeout: Duration,
+    ) -> Result<usize> {
+        let handle = self.get_raw_connection()?;
+        Ok(handle.write_bulk(endpoint, buf, timeout)?)
     }
 
     pub(crate) fn get_raw_connection(&self) -> Result<Arc<DeviceHandle<GlobalContext>>> {

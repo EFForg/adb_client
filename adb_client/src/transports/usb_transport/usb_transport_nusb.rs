@@ -1,9 +1,9 @@
-use std::{fmt::Debug, sync::Arc, time::Duration};
+use std::{collections::HashMap, fmt::Debug, time::Duration};
 
 use async_io::{Timer, block_on};
 use futures_lite::FutureExt;
 use nusb::{
-    transfer::{Direction, EndpointType, RequestBuffer}, Device, DeviceInfo, Interface
+    transfer::{Control, ControlType, Direction, EndpointType, Recipient, RequestBuffer}, Device, DeviceInfo, Interface
 };
 
 use super::super::{ADBMessageTransport, ADBTransport};
@@ -15,6 +15,7 @@ use crate::{
 #[derive(Clone)]
 struct Endpoint {
     iface: Interface,
+    iface_num: u8,
     address: u8,
 }
 
@@ -28,9 +29,10 @@ struct EndpointDesc {
 #[derive(Clone)]
 pub struct USBTransport {
     device_info: DeviceInfo,
-    device: Option<Arc<Device>>,
+    device: Option<Device>,
     read_endpoint: Option<Endpoint>,
     write_endpoint: Option<Endpoint>,
+    other_interfaces: HashMap<u8, Interface>,
 }
 
 impl USBTransport {
@@ -58,7 +60,88 @@ impl USBTransport {
             device: None,
             read_endpoint: None,
             write_endpoint: None,
+            other_interfaces: HashMap::new(),
         }
+    }
+
+    /// Claim a USB interface if it is not already claimed by the read or write endpoint.
+    pub fn claim_interface(&mut self, iface: u8) -> Result<()> {
+        if self
+            .read_endpoint
+            .as_ref()
+            .is_some_and(|ep| ep.iface_num == iface)
+            || self
+                .write_endpoint
+                .as_ref()
+                .is_some_and(|ep| ep.iface_num == iface)
+            || self.other_interfaces.get(&iface).is_some()
+        {
+            // Already claimed
+            return Ok(());
+        }
+
+        let device = self.get_device()?;
+        let interface = device.claim_interface(iface)?;
+        self.other_interfaces.insert(iface, interface);
+        Ok(())
+    }
+
+    /// Send a raw USB control message to the desired interface
+    pub fn send_usb_class_control_msg(
+        &self,
+        iface: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        buf: &[u8],
+        timeout: Duration,
+    ) -> Result<()> {
+        let interface = self.get_interface(iface)?;
+
+        let control = Control {
+            control_type: ControlType::Class,
+            recipient: Recipient::Interface,
+            request,
+            value,
+            index,
+        };
+
+        interface.control_out_blocking(control, buf, timeout)?;
+        Ok(())
+    }
+
+    /// Perform a raw USB bulk read.
+    pub fn usb_bulk_read(
+        &self,
+        iface: u8,
+        endpoint: u8,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> Result<usize> {
+        let interface = self.get_interface(iface)?;
+        Ok(interface.read_bulk(endpoint, buf, timeout)?)
+    }
+
+    /// Perform a raw USB bulk write.
+    pub fn usb_bulk_write(
+        &self,
+        iface: u8,
+        endpoint: u8,
+        buf: &[u8],
+        timeout: Duration,
+    ) -> Result<usize> {
+        let interface = self.get_interface(iface)?;
+        Ok(interface.write_bulk(endpoint, buf, timeout)?)
+    }
+
+    fn get_device(&self) -> Result<Device> {
+        self.device
+            .as_ref()
+            .ok_or(RustADBError::IOError(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "no device setup",
+            )))
+            .cloned()
     }
 
     fn get_read_endpoint(&self) -> Result<Endpoint> {
@@ -80,10 +163,31 @@ impl USBTransport {
             )))
     }
 
+    fn get_interface(&self, iface: u8) -> Result<Interface> {
+        if let Some(ep) = self.read_endpoint.as_ref() {
+            if ep.iface_num == iface {
+                return Ok(ep.iface.clone());
+            }
+        }
+        if let Some(ep) = self.write_endpoint.as_ref() {
+            if ep.iface_num == iface {
+                return Ok(ep.iface.clone());
+            }
+        }
+        self.other_interfaces
+            .get(&iface)
+            .ok_or(RustADBError::IOError(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "interface not yet claimed",
+            )))
+            .cloned()
+    }
+
     fn configure_endpoint(device: &Device, endpoint_desc: &EndpointDesc) -> Result<Endpoint> {
         let iface = device.claim_interface(endpoint_desc.iface)?;
         Ok(Endpoint {
             iface,
+            iface_num: endpoint_desc.iface,
             address: endpoint_desc.address,
         })
     }
@@ -141,7 +245,7 @@ impl ADBTransport for USBTransport {
 
         self.write_endpoint = Some(Self::configure_endpoint(&device, &write_endpoint)?);
 
-        self.device = Some(Arc::new(device));
+        self.device = Some(device);
 
         Ok(())
     }
@@ -183,10 +287,7 @@ impl ADBMessageTransport for USBTransport {
         Ok(())
     }
 
-    fn read_message_with_timeout(
-        &mut self,
-        timeout: Duration,
-    ) -> Result<ADBTransportMessage> {
+    fn read_message_with_timeout(&mut self, timeout: Duration) -> Result<ADBTransportMessage> {
         let endpoint = self.get_read_endpoint()?;
 
         let mut data = [0; 24];
@@ -229,10 +330,15 @@ impl ADBMessageTransport for USBTransport {
     }
 }
 
-impl Endpoint {
-    fn write_bulk(&self, buf: &[u8], timeout: Duration) -> Result<usize> {
+trait InterfaceHelpers {
+    fn write_bulk(&self, address: u8, buf: &[u8], timeout: Duration) -> Result<usize>;
+    fn read_bulk(&self, address: u8, buf: &mut [u8], timeout: Duration) -> Result<usize>;
+}
+
+impl InterfaceHelpers for Interface {
+    fn write_bulk(&self, address: u8, buf: &[u8], timeout: Duration) -> Result<usize> {
         let fut = async {
-            let comp = self.iface.bulk_out(self.address, buf.to_vec()).await;
+            let comp = self.bulk_out(address, buf.to_vec()).await;
             comp.status?;
 
             let n = comp.data.actual_length();
@@ -245,12 +351,9 @@ impl Endpoint {
         }))
     }
 
-    fn read_bulk(&self, buf: &mut [u8], timeout: Duration) -> Result<usize> {
+    fn read_bulk(&self, address: u8, buf: &mut [u8], timeout: Duration) -> Result<usize> {
         let fut = async {
-            let comp = self
-                .iface
-                .bulk_in(self.address, RequestBuffer::new(buf.len()))
-                .await;
+            let comp = self.bulk_in(address, RequestBuffer::new(buf.len())).await;
             comp.status?;
 
             let n = comp.data.len();
@@ -262,6 +365,16 @@ impl Endpoint {
             Timer::after(timeout).await;
             Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into())
         }))
+    }
+}
+
+impl Endpoint {
+    fn write_bulk(&self, buf: &[u8], timeout: Duration) -> Result<usize> {
+        self.iface.write_bulk(self.address, buf, timeout)
+    }
+
+    fn read_bulk(&self, buf: &mut [u8], timeout: Duration) -> Result<usize> {
+        self.iface.read_bulk(self.address, buf, timeout)
     }
 }
 
@@ -337,4 +450,3 @@ fn is_adb_device(device: &Device) -> bool {
     }
     false
 }
-
