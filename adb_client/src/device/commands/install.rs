@@ -24,7 +24,7 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
 
         let transport = self.get_transport().clone();
 
-        let mut writer = MessageWriter::new(transport, local_id, self.get_remote_id()?);
+        let mut writer = MessageWriter::new(transport, local_id, 0);
 
         std::io::copy(&mut apk_file, &mut writer)?;
 

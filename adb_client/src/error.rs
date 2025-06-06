@@ -66,9 +66,10 @@ pub enum RustADBError {
     /// Cannot get home directory
     #[error("Cannot get home directory")]
     NoHomeDirectory,
-    /// Generic USB error
-    #[error("USB Error: {0}")]
-    UsbError(#[from] rusb::Error),
+    /// USB data transfer error
+    #[cfg(all(feature = "trans-nusb"))]
+    #[error("USB Transfer Error: {0}")]
+    UsbTransferError(#[from] nusb::transfer::TransferError),
     /// USB device not found
     #[error("USB Device not found: {0} {1}")]
     USBDeviceNotFound(u16, u16),
@@ -97,12 +98,15 @@ pub enum RustADBError {
     #[error("error with pkcs8: {0}")]
     RsaPkcs8Error(#[from] rsa::pkcs8::Error),
     /// Error during certificate generation
+    #[cfg(any(feature = "tcp", feature = "usb-auth"))]
     #[error(transparent)]
     CertificateGenerationError(#[from] rcgen::Error),
     /// TLS Error
+    #[cfg(feature = "tcp")]
     #[error(transparent)]
     TLSError(#[from] rustls::Error),
     /// PEM certificate error
+    #[cfg(feature = "tcp")]
     #[error(transparent)]
     PemCertError(#[from] rustls_pki_types::pem::Error),
     /// Error while locking mutex
@@ -120,10 +124,33 @@ pub enum RustADBError {
     /// An unknown transport has been provided
     #[error("unknown transport: {0}")]
     UnknownTransport(String),
+    /// An error occurred while trying to convert integer sizes to one another
+    #[error(transparent)]
+    IntConvError(#[from] std::num::TryFromIntError),
 }
 
 impl<T> From<std::sync::PoisonError<T>> for RustADBError {
     fn from(_err: std::sync::PoisonError<T>) -> Self {
         Self::PoisonError
+    }
+}
+
+#[cfg(feature = "trans-libusb")]
+impl From<rusb::Error> for RustADBError {
+    fn from(value: rusb::Error) -> Self {
+        use std::io::ErrorKind;
+        let io_error: std::io::Error = match value {
+            rusb::Error::InvalidParam => ErrorKind::InvalidInput.into(),
+            rusb::Error::NotFound => ErrorKind::NotFound.into(),
+            rusb::Error::Busy => ErrorKind::ResourceBusy.into(),
+            rusb::Error::Timeout => ErrorKind::TimedOut.into(),
+            rusb::Error::Access => ErrorKind::PermissionDenied.into(),
+            rusb::Error::Pipe => ErrorKind::BrokenPipe.into(),
+            rusb::Error::NoMem => ErrorKind::OutOfMemory.into(),
+            rusb::Error::Interrupted => ErrorKind::Interrupted.into(),
+            rusb::Error::NotSupported => ErrorKind::Unsupported.into(),
+            other => std::io::Error::new(ErrorKind::Other, other),
+        };
+        RustADBError::IOError(io_error)
     }
 }

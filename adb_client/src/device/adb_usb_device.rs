@@ -1,17 +1,16 @@
-use rusb::Device;
-use rusb::DeviceDescriptor;
-use rusb::UsbContext;
-use rusb::constants::LIBUSB_CLASS_VENDOR_SPEC;
 use std::fs::read_to_string;
 use std::io::Read;
 use std::io::Write;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use super::adb_message_device::ADBMessageDevice;
+use super::get_default_adb_key_path;
 use super::models::MessageCommand;
 use super::{ADBRsaKey, ADBTransportMessage};
+use crate::search_adb_devices;
 use crate::ADBDeviceExt;
 use crate::ADBMessageTransport;
 use crate::ADBTransport;
@@ -19,80 +18,18 @@ use crate::device::adb_transport_message::{AUTH_RSAPUBLICKEY, AUTH_SIGNATURE, AU
 use crate::{Result, RustADBError, USBTransport};
 
 pub fn read_adb_private_key<P: AsRef<Path>>(private_key_path: P) -> Result<Option<ADBRsaKey>> {
-    Ok(read_to_string(private_key_path.as_ref()).map(|pk| {
-        match ADBRsaKey::new_from_pkcs8(&pk) {
-            Ok(pk) => Some(pk),
-            Err(e) => {
-                log::error!("Error while create RSA private key: {e}");
-                None
-            }
-        }
-    })?)
-}
-
-/// Search for adb devices with known interface class and subclass values
-fn search_adb_devices() -> Result<Option<(u16, u16)>> {
-    let mut found_devices = vec![];
-    for device in rusb::devices()?.iter() {
-        let Ok(des) = device.device_descriptor() else {
-            continue;
-        };
-        if is_adb_device(&device, &des) {
-            log::debug!(
-                "Autodetect device {:04x}:{:04x}",
-                des.vendor_id(),
-                des.product_id()
-            );
-            found_devices.push((des.vendor_id(), des.product_id()));
+    let pk = match read_to_string(private_key_path.as_ref()) {
+        Ok(contents) => contents,
+        Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    match ADBRsaKey::new_from_pkcs8(&pk) {
+        Ok(pk) => Ok(Some(pk)),
+        Err(e) => {
+            log::error!("Error while create RSA private key: {e}");
+            Ok(None)
         }
     }
-
-    match (found_devices.first(), found_devices.get(1)) {
-        (None, _) => Ok(None),
-        (Some(identifiers), None) => Ok(Some(*identifiers)),
-        (Some((vid1, pid1)), Some((vid2, pid2))) => Err(RustADBError::DeviceNotFound(format!(
-            "Found two Android devices {:04x}:{:04x} and {:04x}:{:04x}",
-            vid1, pid1, vid2, pid2
-        ))),
-    }
-}
-
-fn is_adb_device<T: UsbContext>(device: &Device<T>, des: &DeviceDescriptor) -> bool {
-    const ADB_SUBCLASS: u8 = 0x42;
-    const ADB_PROTOCOL: u8 = 0x1;
-
-    // Some devices require choosing the file transfer mode
-    // for usb debugging to take effect.
-    const BULK_CLASS: u8 = 0xdc;
-    const BULK_ADB_SUBCLASS: u8 = 2;
-
-    for n in 0..des.num_configurations() {
-        let Ok(config_des) = device.config_descriptor(n) else {
-            continue;
-        };
-        for interface in config_des.interfaces() {
-            for interface_des in interface.descriptors() {
-                let proto = interface_des.protocol_code();
-                let class = interface_des.class_code();
-                let subcl = interface_des.sub_class_code();
-                if proto == ADB_PROTOCOL
-                    && ((class == LIBUSB_CLASS_VENDOR_SPEC && subcl == ADB_SUBCLASS)
-                        || (class == BULK_CLASS && subcl == BULK_ADB_SUBCLASS))
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-pub fn get_default_adb_key_path() -> Result<PathBuf> {
-    homedir::my_home()
-        .ok()
-        .flatten()
-        .map(|home| home.join(".android").join("adbkey"))
-        .ok_or(RustADBError::NoHomeDirectory)
 }
 
 /// Represent a device reached and available over USB.
@@ -180,6 +117,12 @@ impl ADBUSBDevice {
         self.get_transport_mut().write_message(message)?;
 
         let message = self.get_transport_mut().read_message()?;
+        // If the device returned CNXN instead of AUTH it does not require authentication,
+        // so we can skip the auth steps.
+        if message.header().command() == MessageCommand::Cnxn {
+            self.inner.set_maximum_data_size(message.header().arg1())?;
+            return Ok(());
+        }
         message.assert_command(MessageCommand::Auth)?;
 
         // At this point, we should have receive an AUTH message with arg0 == 1
@@ -220,6 +163,7 @@ impl ADBUSBDevice {
             .read_message_with_timeout(Duration::from_secs(10))
             .and_then(|message| {
                 message.assert_command(MessageCommand::Cnxn)?;
+                self.inner.set_maximum_data_size(message.header().arg1())?;
                 Ok(message)
             })?;
 
@@ -232,7 +176,8 @@ impl ADBUSBDevice {
     }
 
     #[inline]
-    fn get_transport_mut(&mut self) -> &mut USBTransport {
+    /// Get a reference to the underlying [`USBTransport`].
+    pub fn get_transport_mut(&mut self) -> &mut USBTransport {
         self.inner.get_transport_mut()
     }
 }
