@@ -127,6 +127,9 @@ pub enum RustADBError {
     /// An error occurred while trying to convert integer sizes to one another
     #[error(transparent)]
     IntConvError(#[from] std::num::TryFromIntError),
+    /// No auth key was provided but device requested auth
+    #[error("Device reuqested auth but no auth key was provided")]
+    NoAuthKey,
 }
 
 impl<T> From<std::sync::PoisonError<T>> for RustADBError {

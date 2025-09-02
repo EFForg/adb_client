@@ -1,7 +1,7 @@
 use std::fs::read_to_string;
+use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
-use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -10,11 +10,11 @@ use super::adb_message_device::ADBMessageDevice;
 use super::get_default_adb_key_path;
 use super::models::MessageCommand;
 use super::{ADBRsaKey, ADBTransportMessage};
-use crate::search_adb_devices;
 use crate::ADBDeviceExt;
 use crate::ADBMessageTransport;
 use crate::ADBTransport;
 use crate::device::adb_transport_message::{AUTH_RSAPUBLICKEY, AUTH_SIGNATURE, AUTH_TOKEN};
+use crate::search_adb_devices;
 use crate::{Result, RustADBError, USBTransport};
 
 pub fn read_adb_private_key<P: AsRef<Path>>(private_key_path: P) -> Result<Option<ADBRsaKey>> {
@@ -35,7 +35,7 @@ pub fn read_adb_private_key<P: AsRef<Path>>(private_key_path: P) -> Result<Optio
 /// Represent a device reached and available over USB.
 #[derive(Debug)]
 pub struct ADBUSBDevice {
-    private_key: ADBRsaKey,
+    private_key: Option<ADBRsaKey>,
     inner: ADBMessageDevice<USBTransport>,
 }
 
@@ -51,7 +51,10 @@ impl ADBUSBDevice {
         product_id: u16,
         private_key_path: PathBuf,
     ) -> Result<Self> {
-        Self::new_from_transport_inner(USBTransport::new(vendor_id, product_id)?, private_key_path)
+        Self::new_from_transport_inner(
+            USBTransport::new(vendor_id, product_id)?,
+            Some(private_key_path),
+        )
     }
 
     /// Instantiate a new [`ADBUSBDevice`] from a [`USBTransport`] and an optional private key path.
@@ -64,16 +67,29 @@ impl ADBUSBDevice {
             None => get_default_adb_key_path()?,
         };
 
-        Self::new_from_transport_inner(transport, private_key_path)
+        Self::new_from_transport_inner(transport, Some(private_key_path))
+    }
+
+    /// Instantiate a new [`ADBUSBDevice`] with no auth key.
+    pub fn new_no_auth(vendor_id: u16, product_id: u16) -> Result<Self> {
+        Self::new_from_transport_inner(USBTransport::new(vendor_id, product_id)?, None)
+    }
+
+    /// Instantiate a new [`ADBUSBDevice`] from a [`USBTransport`] and no auth key.
+    pub fn new_from_transport_no_auth_key(transport: USBTransport) -> Result<Self> {
+        Self::new_from_transport_inner(transport, None)
     }
 
     fn new_from_transport_inner(
         transport: USBTransport,
-        private_key_path: PathBuf,
+        private_key_path: Option<PathBuf>,
     ) -> Result<Self> {
-        let private_key = match read_adb_private_key(private_key_path)? {
-            Some(pk) => pk,
-            None => ADBRsaKey::new_random()?,
+        let private_key = match private_key_path {
+            Some(private_key_path) => match read_adb_private_key(private_key_path)? {
+                Some(pk) => Some(pk),
+                None => Some(ADBRsaKey::new_random()?),
+            },
+            None => None,
         };
 
         let mut s = Self {
@@ -135,7 +151,11 @@ impl ADBUSBDevice {
             }
         };
 
-        let sign = self.private_key.sign(auth_message.into_payload())?;
+        let sign = self
+            .private_key
+            .as_ref()
+            .ok_or(RustADBError::NoAuthKey)?
+            .sign(auth_message.into_payload())?;
 
         let message = ADBTransportMessage::new(MessageCommand::Auth, AUTH_SIGNATURE, 0, &sign);
 
@@ -151,7 +171,12 @@ impl ADBUSBDevice {
             return Ok(());
         }
 
-        let mut pubkey = self.private_key.android_pubkey_encode()?.into_bytes();
+        let mut pubkey = self
+            .private_key
+            .as_ref()
+            .ok_or(RustADBError::NoAuthKey)?
+            .android_pubkey_encode()?
+            .into_bytes();
         pubkey.push(b'\0');
 
         let message = ADBTransportMessage::new(MessageCommand::Auth, AUTH_RSAPUBLICKEY, 0, &pubkey);
