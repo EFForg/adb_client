@@ -4,11 +4,11 @@ use crate::{Result, RustADBError};
 
 use super::models::MessageCommand;
 
-#[cfg(feature = "usb")]
+#[cfg(all(feature = "usb", feature = "usb-auth"))]
 pub const AUTH_TOKEN: u32 = 1;
-#[cfg(feature = "usb")]
+#[cfg(all(feature = "usb", feature = "usb-auth"))]
 pub const AUTH_SIGNATURE: u32 = 2;
-#[cfg(feature = "usb")]
+#[cfg(all(feature = "usb", feature = "usb-auth"))]
 pub const AUTH_RSAPUBLICKEY: u32 = 3;
 
 #[derive(Debug)]

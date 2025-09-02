@@ -1,26 +1,23 @@
-use std::fs::read_to_string;
-use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use super::adb_message_device::ADBMessageDevice;
-use super::get_default_adb_key_path;
 use super::models::MessageCommand;
-use super::{ADBRsaKey, ADBTransportMessage};
+use super::ADBTransportMessage;
+#[cfg(all(feature = "usb", feature = "usb-auth"))]
+use super::ADBRsaKey;
 use crate::ADBDeviceExt;
 use crate::ADBMessageTransport;
 use crate::ADBTransport;
-use crate::device::adb_transport_message::{AUTH_RSAPUBLICKEY, AUTH_SIGNATURE, AUTH_TOKEN};
-use crate::search_adb_devices;
-use crate::{Result, RustADBError, USBTransport};
+use crate::{Result, USBTransport};
 
+#[cfg(feature = "usb-auth")]
 pub fn read_adb_private_key<P: AsRef<Path>>(private_key_path: P) -> Result<Option<ADBRsaKey>> {
-    let pk = match read_to_string(private_key_path.as_ref()) {
+    let pk = match std::fs::read_to_string(private_key_path.as_ref()) {
         Ok(contents) => contents,
-        Err(ref e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
     match ADBRsaKey::new_from_pkcs8(&pk) {
@@ -35,17 +32,20 @@ pub fn read_adb_private_key<P: AsRef<Path>>(private_key_path: P) -> Result<Optio
 /// Represent a device reached and available over USB.
 #[derive(Debug)]
 pub struct ADBUSBDevice {
+    #[cfg(feature = "usb-auth")]
     private_key: Option<ADBRsaKey>,
     inner: ADBMessageDevice<USBTransport>,
 }
 
 impl ADBUSBDevice {
     /// Instantiate a new [`ADBUSBDevice`]
+    #[cfg(feature = "usb-auth")]
     pub fn new(vendor_id: u16, product_id: u16) -> Result<Self> {
-        Self::new_with_custom_private_key(vendor_id, product_id, get_default_adb_key_path()?)
+        Self::new_with_custom_private_key(vendor_id, product_id, super::get_default_adb_key_path()?)
     }
 
     /// Instantiate a new [`ADBUSBDevice`] using a custom private key path
+    #[cfg(feature = "usb-auth")]
     pub fn new_with_custom_private_key(
         vendor_id: u16,
         product_id: u16,
@@ -58,13 +58,14 @@ impl ADBUSBDevice {
     }
 
     /// Instantiate a new [`ADBUSBDevice`] from a [`USBTransport`] and an optional private key path.
+    #[cfg(feature = "usb-auth")]
     pub fn new_from_transport(
         transport: USBTransport,
         private_key_path: Option<PathBuf>,
     ) -> Result<Self> {
         let private_key_path = match private_key_path {
             Some(private_key_path) => private_key_path,
-            None => get_default_adb_key_path()?,
+            None => super::get_default_adb_key_path()?,
         };
 
         Self::new_from_transport_inner(transport, Some(private_key_path))
@@ -80,6 +81,7 @@ impl ADBUSBDevice {
         Self::new_from_transport_inner(transport, None)
     }
 
+    #[cfg(feature = "usb-auth")]
     fn new_from_transport_inner(
         transport: USBTransport,
         private_key_path: Option<PathBuf>,
@@ -102,18 +104,34 @@ impl ADBUSBDevice {
         Ok(s)
     }
 
+    #[cfg(not(feature = "usb-auth"))]
+    fn new_from_transport_inner(
+        transport: USBTransport,
+        _private_key_path: Option<PathBuf>,
+    ) -> Result<Self> {
+        let mut s = Self {
+            inner: ADBMessageDevice::new(transport),
+        };
+
+        s.connect()?;
+
+        Ok(s)
+    }
+
     /// autodetect connected ADB devices and establish a connection with the first device found
+    #[cfg(feature = "usb-auth")]
     pub fn autodetect() -> Result<Self> {
-        Self::autodetect_with_custom_private_key(get_default_adb_key_path()?)
+        Self::autodetect_with_custom_private_key(super::get_default_adb_key_path()?)
     }
 
     /// autodetect connected ADB devices and establish a connection with the first device found using a custom private key path
+    #[cfg(feature = "usb-auth")]
     pub fn autodetect_with_custom_private_key(private_key_path: PathBuf) -> Result<Self> {
-        match search_adb_devices()? {
+        match crate::search_adb_devices()? {
             Some((vendor_id, product_id)) => {
                 ADBUSBDevice::new_with_custom_private_key(vendor_id, product_id, private_key_path)
             }
-            _ => Err(RustADBError::DeviceNotFound(
+            _ => Err(crate::RustADBError::DeviceNotFound(
                 "cannot find USB devices matching the signature of an ADB device".into(),
             )),
         }
@@ -139,63 +157,70 @@ impl ADBUSBDevice {
             self.inner.set_maximum_data_size(message.header().arg1())?;
             return Ok(());
         }
-        message.assert_command(MessageCommand::Auth)?;
 
-        // At this point, we should have receive an AUTH message with arg0 == 1
-        let auth_message = match message.header().arg0() {
-            AUTH_TOKEN => message,
-            v => {
-                return Err(RustADBError::ADBRequestFailed(format!(
+        #[cfg(feature = "usb-auth")]
+        {
+            use crate::device::adb_transport_message::{AUTH_RSAPUBLICKEY, AUTH_SIGNATURE, AUTH_TOKEN};
+            use crate::RustADBError;
+
+            message.assert_command(MessageCommand::Auth)?;
+
+            // At this point, we should have receive an AUTH message with arg0 == 1
+            let auth_message = match message.header().arg0() {
+                AUTH_TOKEN => message,
+                v => {
+                    return Err(RustADBError::ADBRequestFailed(format!(
                     "Received AUTH message with type != 1 ({v})"
                 )));
+                }
+            };
+
+            let sign = self
+                .private_key
+                .as_ref()
+                .ok_or(RustADBError::NoAuthKey)?
+                .sign(auth_message.into_payload())?;
+
+            let message = ADBTransportMessage::new(MessageCommand::Auth, AUTH_SIGNATURE, 0, &sign);
+
+            self.get_transport_mut().write_message(message)?;
+
+            let received_response = self.get_transport_mut().read_message()?;
+
+            if received_response.header().command() == MessageCommand::Cnxn {
+                log::info!(
+                    "Authentication OK, device info {}",
+                    String::from_utf8(received_response.into_payload())?
+                );
+                return Ok(());
             }
-        };
 
-        let sign = self
-            .private_key
-            .as_ref()
-            .ok_or(RustADBError::NoAuthKey)?
-            .sign(auth_message.into_payload())?;
+            let mut pubkey = self
+                .private_key
+                .as_ref()
+                .ok_or(RustADBError::NoAuthKey)?
+                .android_pubkey_encode()?
+                .into_bytes();
+            pubkey.push(b'\0');
 
-        let message = ADBTransportMessage::new(MessageCommand::Auth, AUTH_SIGNATURE, 0, &sign);
+            let message = ADBTransportMessage::new(MessageCommand::Auth, AUTH_RSAPUBLICKEY, 0, &pubkey);
 
-        self.get_transport_mut().write_message(message)?;
+            self.get_transport_mut().write_message(message)?;
 
-        let received_response = self.get_transport_mut().read_message()?;
+            let response = self
+                .get_transport_mut()
+                .read_message_with_timeout(std::time::Duration::from_secs(10))
+                .and_then(|message| {
+                    message.assert_command(MessageCommand::Cnxn)?;
+                    self.inner.set_maximum_data_size(message.header().arg1())?;
+                    Ok(message)
+                })?;
 
-        if received_response.header().command() == MessageCommand::Cnxn {
             log::info!(
                 "Authentication OK, device info {}",
-                String::from_utf8(received_response.into_payload())?
+                String::from_utf8(response.into_payload())?
             );
-            return Ok(());
         }
-
-        let mut pubkey = self
-            .private_key
-            .as_ref()
-            .ok_or(RustADBError::NoAuthKey)?
-            .android_pubkey_encode()?
-            .into_bytes();
-        pubkey.push(b'\0');
-
-        let message = ADBTransportMessage::new(MessageCommand::Auth, AUTH_RSAPUBLICKEY, 0, &pubkey);
-
-        self.get_transport_mut().write_message(message)?;
-
-        let response = self
-            .get_transport_mut()
-            .read_message_with_timeout(Duration::from_secs(10))
-            .and_then(|message| {
-                message.assert_command(MessageCommand::Cnxn)?;
-                self.inner.set_maximum_data_size(message.header().arg1())?;
-                Ok(message)
-            })?;
-
-        log::info!(
-            "Authentication OK, device info {}",
-            String::from_utf8(response.into_payload())?
-        );
 
         Ok(())
     }

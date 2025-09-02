@@ -1,9 +1,11 @@
+#[cfg(feature = "tcp")]
 mod adb_request_status;
 #[cfg(feature = "tcp")]
 mod adb_server_command;
 mod adb_stat_response;
 #[cfg(any(feature = "tcp", feature = "usb"))]
 mod framebuffer_info;
+#[cfg(feature = "tcp")]
 mod host_features;
 mod reboot_type;
 #[cfg(feature = "tcp")]

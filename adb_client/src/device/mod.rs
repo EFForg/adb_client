@@ -10,8 +10,6 @@ mod message_writer;
 mod models;
 mod shell_message_writer;
 
-use std::path::PathBuf;
-
 use adb_message_device::ADBMessageDevice;
 #[cfg(feature = "tcp")]
 pub use adb_tcp_device::ADBTcpDevice;
@@ -22,13 +20,15 @@ pub use adb_transport_message::ADBTransportMessage;
 pub use adb_usb_device::ADBUSBDevice;
 pub use message_writer::MessageWriter;
 pub use models::{MessageCommand, MessageSubcommand};
-#[cfg(feature = "usb")]
+#[cfg(all(feature = "usb", feature = "usb-auth"))]
 pub use models::ADBRsaKey;
 pub use shell_message_writer::ShellMessageWriter;
 
+#[cfg(any(all(feature = "usb", feature = "usb-auth"), feature = "tcp"))]
 use crate::{Result, RustADBError};
 
-pub fn get_default_adb_key_path() -> Result<PathBuf> {
+#[cfg(any(all(feature = "usb", feature = "usb-auth"), feature = "tcp"))]
+pub fn get_default_adb_key_path() -> Result<std::path::PathBuf> {
     homedir::my_home()
         .ok()
         .flatten()
